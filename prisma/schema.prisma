@@ -1,0 +1,285 @@
+```prisma
+// prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ==============================
+// Enums
+// ==============================
+
+enum WatchStatus {
+  UNCHECKED
+  RESEARCHING
+  BUY_CONSIDERING
+  NO_TRADE
+  CLOSED
+}
+
+enum PlanType {
+  BUY
+  NO_TRADE
+  WATCH
+}
+
+enum PlanStatus {
+  DRAFT
+  COMMITTED
+  EXECUTED
+  CLOSED
+}
+
+enum FollowedPlan {
+  YES
+  NO
+  PARTIAL
+  UNKNOWN
+}
+
+enum SettingValueType {
+  STRING
+  NUMBER
+  BOOLEAN
+}
+
+// ==============================
+// Stocks
+// 銘柄マスタ
+// ==============================
+
+model Stock {
+  id        String   @id @default(cuid())
+  code      String   @unique @db.VarChar(5)
+  name      String   @db.VarChar(255)
+  market    String?  @db.VarChar(100)
+  memo      String?  @db.Text
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  disclosures      Disclosure[]
+  watchlistItems   WatchlistItem[]
+  tradePlans       TradePlan[]
+  verificationLogs VerificationLog[]
+
+  @@index([name])
+  @@map("stocks")
+}
+
+// ==============================
+// Disclosures
+// 注目開示情報
+// ==============================
+
+model Disclosure {
+  id                String   @id @default(cuid())
+  uniqueKey         String   @unique @map("unique_key") @db.VarChar(128)
+  disclosedAt       DateTime @map("disclosed_at")
+
+  stockCode         String   @map("stock_code") @db.VarChar(5)
+  stockNameSnapshot String   @map("stock_name_snapshot") @db.VarChar(255)
+
+  title             String   @db.Text
+  url               String?  @db.Text
+
+  primaryCategory   String?  @map("primary_category") @db.VarChar(100)
+  matchedCategories Json?    @map("matched_categories")
+  autoScore         Int?     @map("auto_score")
+  userPriority      Int?     @map("user_priority")
+  isChecked         Boolean  @default(false) @map("is_checked")
+
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  stock             Stock    @relation(fields: [stockCode], references: [code], onDelete: Restrict, onUpdate: Cascade)
+  watchlistItems    WatchlistItem[]
+  tradePlans        TradePlan[]
+
+  @@index([disclosedAt])
+  @@index([stockCode])
+  @@index([primaryCategory])
+  @@index([isChecked])
+  @@map("disclosures")
+}
+
+// ==============================
+// Watchlist Items
+// 監視リスト
+// ==============================
+
+model WatchlistItem {
+  id                String      @id @default(cuid())
+
+  stockCode         String      @map("stock_code") @db.VarChar(5)
+  stockNameSnapshot String      @map("stock_name_snapshot") @db.VarChar(255)
+
+  disclosureId      String?     @map("disclosure_id")
+
+  reason            String      @db.Text
+  category          String?     @db.VarChar(100)
+  status            WatchStatus @default(UNCHECKED)
+  watchMemo         String?     @map("watch_memo") @db.Text
+
+  createdAt         DateTime    @default(now()) @map("created_at")
+  updatedAt         DateTime    @updatedAt @map("updated_at")
+
+  stock             Stock       @relation(fields: [stockCode], references: [code], onDelete: Restrict, onUpdate: Cascade)
+  disclosure        Disclosure? @relation(fields: [disclosureId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  tradePlans        TradePlan[]
+
+  @@index([stockCode])
+  @@index([disclosureId])
+  @@index([status])
+  @@index([category])
+  @@index([createdAt])
+  @@map("watchlist_items")
+}
+
+// ==============================
+// Trade Plans
+// 取引計画
+// ==============================
+
+model TradePlan {
+  id                       String     @id @default(cuid())
+
+  stockCode                String     @map("stock_code") @db.VarChar(5)
+  stockNameSnapshot        String     @map("stock_name_snapshot") @db.VarChar(255)
+
+  disclosureId             String?    @map("disclosure_id")
+  watchlistId              String?    @map("watchlist_id")
+
+  planType                 PlanType   @map("plan_type")
+  planStatus               PlanStatus @default(DRAFT) @map("plan_status")
+
+  // 事前仮説・見送り理由
+  thesis                   String?    @db.Text
+  noTradeReason            String?    @map("no_trade_reason") @db.Text
+
+  // 買い計画：出口条件
+  plannedEntryPrice        Decimal?   @map("planned_entry_price") @db.Decimal(18, 4)
+  plannedStopPrice         Decimal?   @map("planned_stop_price") @db.Decimal(18, 4)
+  plannedTakeProfitPrice   Decimal?   @map("planned_take_profit_price") @db.Decimal(18, 4)
+  maxHoldingDays           Int?       @map("max_holding_days")
+
+  // 買い計画：リスク逆算サイジング
+  accountSizeSnapshot      Decimal?   @map("account_size_snapshot") @db.Decimal(18, 2)
+  riskPercent              Decimal?   @map("risk_percent") @db.Decimal(5, 2)
+  plannedRiskAmount        Decimal?   @map("planned_risk_amount") @db.Decimal(18, 2)
+  plannedLossPerShare      Decimal?   @map("planned_loss_per_share") @db.Decimal(18, 4)
+  tradingUnit              Int        @default(100) @map("trading_unit")
+  recommendedQuantity      Int?       @map("recommended_quantity")
+  plannedQuantity          Int?       @map("planned_quantity")
+
+  // 実績値
+  actualEntryPrice         Decimal?   @map("actual_entry_price") @db.Decimal(18, 4)
+  actualQuantity           Int?       @map("actual_quantity")
+  executedAt               DateTime?  @map("executed_at")
+  closedAt                 DateTime?  @map("closed_at")
+
+  // ロック制御
+  isLocked                 Boolean    @default(false) @map("is_locked")
+  lockedAt                 DateTime?  @map("locked_at")
+  lockedPlanHash           String?    @map("locked_plan_hash") @db.VarChar(128)
+
+  createdAt                DateTime   @default(now()) @map("created_at")
+  updatedAt                DateTime   @updatedAt @map("updated_at")
+
+  stock                    Stock          @relation(fields: [stockCode], references: [code], onDelete: Restrict, onUpdate: Cascade)
+  disclosure               Disclosure?    @relation(fields: [disclosureId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  watchlistItem            WatchlistItem? @relation(fields: [watchlistId], references: [id], onDelete: SetNull, onUpdate: Cascade)
+  verificationLogs         VerificationLog[]
+
+  @@index([stockCode])
+  @@index([disclosureId])
+  @@index([watchlistId])
+  @@index([planType])
+  @@index([planStatus])
+  @@index([isLocked])
+  @@index([createdAt])
+  @@map("trade_plans")
+}
+
+// ==============================
+// Verification Logs
+// 検証ログ
+// ==============================
+
+model VerificationLog {
+  id                String       @id @default(cuid())
+
+  tradePlanId       String       @map("trade_plan_id")
+  stockCode         String       @map("stock_code") @db.VarChar(5)
+  stockNameSnapshot String       @map("stock_name_snapshot") @db.VarChar(255)
+
+  reviewDate        DateTime     @map("review_date") @db.Date
+
+  result            String?      @db.Text
+  lesson            String?      @db.Text
+  followedPlan      FollowedPlan @default(UNKNOWN) @map("followed_plan")
+  deviationSummary  String?      @map("deviation_summary") @db.Text
+  deviationReason   String?      @map("deviation_reason") @db.Text
+  nextRule          String?      @map("next_rule") @db.Text
+
+  createdAt         DateTime     @default(now()) @map("created_at")
+  updatedAt         DateTime     @updatedAt @map("updated_at")
+
+  tradePlan         TradePlan    @relation(fields: [tradePlanId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  stock             Stock        @relation(fields: [stockCode], references: [code], onDelete: Restrict, onUpdate: Cascade)
+
+  @@index([tradePlanId])
+  @@index([stockCode])
+  @@index([reviewDate])
+  @@index([followedPlan])
+  @@map("verification_logs")
+}
+
+// ==============================
+// Keyword Rules
+// 材料分類キーワード
+// ==============================
+
+model KeywordRule {
+  id        String   @id @default(cuid())
+
+  keyword   String   @db.VarChar(255)
+  category  String   @db.VarChar(100)
+  score     Int
+  priority  Int
+  isActive  Boolean  @default(true) @map("is_active")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([keyword, category])
+  @@index([category])
+  @@index([priority])
+  @@index([isActive])
+  @@map("keyword_rules")
+}
+
+// ==============================
+// App Settings
+// アプリ設定
+// ==============================
+
+model AppSetting {
+  id           String           @id @default(cuid())
+
+  settingKey   String           @unique @map("key") @db.VarChar(100)
+  settingValue String           @map("value") @db.VarChar(255)
+  valueType    SettingValueType @map("value_type")
+
+  createdAt    DateTime         @default(now()) @map("created_at")
+  updatedAt    DateTime         @updatedAt @map("updated_at")
+
+  @@map("app_settings")
+}
+```
